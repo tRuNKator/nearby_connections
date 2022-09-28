@@ -4,12 +4,14 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.location.LocationManager;
-import android.util.Log;
-import android.os.Build.VERSION;
-import android.os.Build.VERSION_CODES;
 import android.net.Uri;
+import android.os.Build;
+import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.collection.SimpleArrayMap;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
@@ -31,10 +33,10 @@ import com.google.android.gms.tasks.OnSuccessListener;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.FileOutputStream;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -52,6 +54,8 @@ import io.flutter.plugin.common.PluginRegistry.Registrar;
  * NearbyConnectionsPlugin
  */
 public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin, ActivityAware {
+    private static final String crutchFilesPrefix = String.valueOf(SystemClock.elapsedRealtime());
+
     private Activity activity;
     private static final String SERVICE_ID = "com.pkmnapps.nearby_connections";
     private static MethodChannel channel;
@@ -79,7 +83,6 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
 
     @Override
     public void onMethodCall(MethodCall call, final Result result) {
-
         switch (call.method) {
             case "checkLocationPermission":
                 if (ContextCompat.checkSelfPermission(activity,
@@ -128,7 +131,7 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
                 result.success(null);
                 break;
             case "checkBluetoothPermission": // required for apps running on Android 12 and higher
-                if (VERSION.SDK_INT >= VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     if (
                         ContextCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED && 
                         ContextCompat.checkSelfPermission(activity, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
@@ -143,7 +146,7 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
                 }
                 break;
             case "askBluetoothPermission":
-                if (VERSION.SDK_INT >= VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     ActivityCompat.requestPermissions(activity,
                         new String[]{Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN},
                     1);
@@ -162,18 +165,21 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
                 Log.d("nearby_connections", "askExternalStoragePermission");
                 result.success(null);
                 break;
-            case "copyFileAndDeleteOriginal":
+            case "copyFile":
                 Log.d("nearby_connections", "copyFileAndDeleteOriginal");
                 String sourceUri = (String) call.argument("sourceUri");
                 String destinationFilepath = (String) call.argument("destinationFilepath");
+                Boolean deleteOrigin = (Boolean) call.argument("deleteOrigin");
 
                 try {
                     // Copy the file to a new location.
                     Uri uri = Uri.parse(sourceUri);
                     InputStream in = activity.getContentResolver().openInputStream(uri);
                     copyStream(in, new FileOutputStream(new File(destinationFilepath)));
-                    // Delete the original file.
-                    activity.getContentResolver().delete(uri, null, null);
+                    if (deleteOrigin != null && deleteOrigin == true) {
+                        // Delete the original file.
+                        activity.getContentResolver().delete(uri, null, null);
+                    }
                     result.success(true);
                 } catch (IOException e) {
                     // Log the error.
@@ -330,15 +336,14 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
             }
             case "sendFilePayload": {
                 String endpointId = (String) call.argument("endpointId");
-                String filePath = (String) call.argument("filePath");
+                String fileUri = (String) call.argument("fileUri");
 
                 assert endpointId != null;
-                assert filePath != null;
+                assert fileUri != null;
 
                 try {
-                    File file = new File(filePath);
-
-                    Payload filePayload = Payload.fromFile(file);
+                    ParcelFileDescriptor pfd = activity.getContentResolver().openFileDescriptor(Uri.parse(fileUri), "r");
+                    Payload filePayload = Payload.fromFile(pfd);
                     Nearby.getConnectionsClient(activity).sendPayload(endpointId, filePayload);
                     Log.d("nearby_connections", "sentFilePayload");
                     result.success(filePayload.getId()); // return payload id to dart
@@ -457,6 +462,8 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
     };
 
     private final PayloadCallback payloadCallback = new PayloadCallback() {
+        private final SimpleArrayMap<Long, Payload> incomingFilePayloads = new SimpleArrayMap<>();
+
         @Override
         public void onPayloadReceived(@NonNull String endpointId, @NonNull Payload payload) {
             Log.d("nearby_connections", "onPayloadReceived");
@@ -470,10 +477,22 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
                 assert bytes != null;
                 args.put("bytes", bytes);
             } else if (payload.getType() == Payload.Type.FILE) {
-                args.put("uri", payload.asFile().asUri().toString());
-                if (VERSION.SDK_INT < VERSION_CODES.Q) {
+                Payload.File filePayload = payload.asFile();
+                if (filePayload.asJavaFile() == null) {
+                    //crutch for old gms versions
+                    incomingFilePayloads.put(payload.getId(), payload);
+                    String fileName = crutchFilesPrefix + "_" + String.valueOf(payload.getId());
+                    File filesDir = new File(activity.getFilesDir(), "transfer");
+                    File outFile = new File(filesDir, fileName);
+                    Uri uri = Uri.fromFile(outFile);
+                    args.put("uri", uri.toString());
+                } else {
+                    args.put("uri", Uri.fromFile(filePayload.asJavaFile()).toString());
+                }
+
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                     // This is deprecated and only available on Android 10 and below.
-                    args.put("filePath", payload.asFile().asJavaFile().getAbsolutePath());
+                    //args.put("filePath", payload.asFile().asJavaFile().getAbsolutePath());
                 }
             }
 
@@ -481,17 +500,23 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
         }
 
         @Override
-        public void onPayloadTransferUpdate(@NonNull String endpointId,
-                                            @NonNull PayloadTransferUpdate payloadTransferUpdate) {
+        public void onPayloadTransferUpdate(@NonNull String endpointId, @NonNull PayloadTransferUpdate update) {
             // required for files and streams
 
             Log.d("nearby_connections", "onPayloadTransferUpdate");
             Map<String, Object> args = new HashMap<>();
             args.put("endpointId", endpointId);
-            args.put("payloadId", payloadTransferUpdate.getPayloadId());
-            args.put("status", payloadTransferUpdate.getStatus());
-            args.put("bytesTransferred", payloadTransferUpdate.getBytesTransferred());
-            args.put("totalBytes", payloadTransferUpdate.getTotalBytes());
+            args.put("payloadId", update.getPayloadId());
+            args.put("status", update.getStatus());
+            args.put("bytesTransferred", update.getBytesTransferred());
+            args.put("totalBytes", update.getTotalBytes());
+
+            if (update.getStatus() == PayloadTransferUpdate.Status.SUCCESS) {
+                Payload payload = incomingFilePayloads.remove(update.getPayloadId());
+                if (payload != null) {
+                    crutchCopyCompletedFilePayload(payload);
+                }
+            }
 
             channel.invokeMethod("onPayloadTransferUpdate", args);
         }
@@ -589,15 +614,36 @@ public class NearbyConnectionsPlugin implements MethodCallHandler, FlutterPlugin
             activityPluginBinding.addRequestPermissionsResultListener(locationHelper);
         }
     }
+
+    private void crutchCopyCompletedFilePayload(Payload payload) {
+        String fileName = crutchFilesPrefix + "_" + String.valueOf(payload.getId());
+        File filesDir = new File(activity.getFilesDir(), "transfer");
+        if(!filesDir.exists()) {
+            filesDir.mkdirs();
+        }
+
+        ParcelFileDescriptor pfd = payload.asFile().asParcelFileDescriptor();
+        ParcelFileDescriptor.AutoCloseInputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(pfd);
+        File outFile = new File(filesDir, fileName);
+        try {
+            copyStream(inputStream, new FileOutputStream(outFile));
+            ParcelFileDescriptor.AutoCloseOutputStream outputStream = new ParcelFileDescriptor.AutoCloseOutputStream(pfd);
+            outputStream.write(new byte[0]);
+            outputStream.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
     /** Copies a stream from one location to another. */
     private static void copyStream(InputStream in, OutputStream out) throws IOException {
         try {
             byte[] buffer = new byte[1024];
             int read;
-        while ((read = in.read(buffer)) != -1) {
-            out.write(buffer, 0, read);
-        }
-        out.flush();
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            out.flush();
         } finally {
             in.close();
             out.close();

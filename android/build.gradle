@@ -4,18 +4,18 @@ version '1.0-SNAPSHOT'
 buildscript {
     repositories {
         google()
-        jcenter()
+        mavenCentral()
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:4.1.2'
+        classpath 'com.android.tools.build:gradle:7.3.0'
     }
 }
 
 rootProject.allprojects {
     repositories {
         google()
-        jcenter()
+        mavenCentral()
     }
 }
 
@@ -32,7 +32,7 @@ android {
         disable 'InvalidPackage'
     }
     dependencies{
-        api 'com.google.android.gms:play-services-nearby:18.0.0'
+        api 'com.google.android.gms:play-services-nearby:17.0.0'
     }
 }
 

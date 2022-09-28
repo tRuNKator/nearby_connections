@@ -97,14 +97,14 @@ class Nearby {
           int type = args['type'] ?? PayloadType.NONE;
           Uint8List bytes = args['bytes'] ?? Uint8List(0);
           int payloadId = args['payloadId'] ?? -1;
-          String? filePath = args['filePath'];
+          //String? filePath = args['filePath'];
           String? uri = args['uri'];
 
           Payload payload = Payload(
             type: PayloadType.values[type],
             bytes: bytes,
             id: payloadId,
-            filePath: filePath,
+            //filePath: filePath,
             uri: uri,
           );
 
@@ -213,11 +213,11 @@ class Nearby {
   /// convenience method
   ///
   /// Copy file from [sourceUri] to [destinationFilepath] and delete original.
-  Future<bool> copyFileAndDeleteOriginal(
-          String sourceUri, String destinationFilepath) async =>
-      await _channel.invokeMethod('copyFileAndDeleteOriginal', {
+  Future<bool> copyFile(String sourceUri, String destinationFilepath, {bool deleteOrigin = false}) async =>
+      await _channel.invokeMethod('copyFile', {
         'sourceUri': sourceUri,
         'destinationFilepath': destinationFilepath,
+        'deleteOrigin': deleteOrigin,
       });
 
   /// Start Advertising, Discoverers would be able to discover this advertiser.
@@ -410,12 +410,12 @@ class Nearby {
   /// You must also send a bytes payload to send the filename and extension
   /// so that receiver can rename the file accordingly
   /// Send the payloadID and filename to receiver as bytes payload
-  Future<int> sendFilePayload(String endpointId, String filePath) async {
+  Future<int> sendFilePayload(String endpointId, String fileUri) async {
     return await _channel.invokeMethod(
       'sendFilePayload',
       <String, dynamic>{
         'endpointId': endpointId,
-        'filePath': filePath,
+        'fileUri': fileUri,
       },
     );
   }
